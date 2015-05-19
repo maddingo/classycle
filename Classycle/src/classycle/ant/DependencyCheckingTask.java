@@ -150,8 +150,8 @@ public class DependencyCheckingTask extends ClassycleTask
       Analyser analyser = new Analyser(getClassFileNames(), getPattern(), 
                                        getReflectionPattern(), 
                                        isMergeInnerClasses());
-      Map<Object, Object> properties = _definitionFile == null ? getProject().getProperties() 
-                                               : System.getProperties();
+      Map<Object, Object> properties = (Map<Object, Object>)(_definitionFile == null ? getProject().getProperties() 
+                                               : System.getProperties());
       DependencyChecker dependencyChecker 
                         = new DependencyChecker(analyser,
                                                 getDependencyDefinitions(),

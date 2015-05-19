@@ -24,6 +24,8 @@
  */
 package classycle;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileFilter;
@@ -38,6 +40,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
+import java.util.zip.ZipInputStream;
 
 import classycle.classfile.ClassConstant;
 import classycle.classfile.Constant;
@@ -48,129 +51,110 @@ import classycle.util.StringPattern;
 import classycle.util.TrueStringPattern;
 
 /**
- *  Utility methods for parsing class files and creating directed graphs.
- *  The nodes of the graph are classes. The initial vertex of an edge is the
- *  class which uses the class specified by the terminal vertex.
+ * Utility methods for parsing class files and creating directed graphs. The
+ * nodes of the graph are classes. The initial vertex of an edge is the class
+ * which uses the class specified by the terminal vertex.
  *
- *  @author Franz-Josef Elmer
+ * @author Franz-Josef Elmer
  */
-public class Parser 
+public class Parser
 {
   public static final String ARCHIVE_PATH_DELIMITER = "::";
   private static final int ACC_INTERFACE = 0x200, ACC_ABSTRACT = 0x400;
-  private static final String[] ZIP_FILE_TYPES 
-      = new String[] {".zip", ".jar", ".war", ".ear"}; 
-  private static final FileFilter ZIP_FILE_FILTER = new FileFilter()
+  private static final String[] ZIP_FILE_TYPES = new String[] { ".zip", ".jar", ".war", ".ear" };
+  private static final FileFilter ZIP_FILE_FILTER = new FileFilter() {
+    public boolean accept(File file)
     {
-      public boolean accept(File file)
-      {
-        return isZipFile(file);
-      }
-    };
+      return isZipFile(file);
+    }
+  };
 
   /** Private constructor to prohibit instantiation. */
   private Parser() {
   }
-  
+
   /**
-   * Reads and parses class files and creates a direct graph. Short-cut of 
+   * Reads and parses class files and creates a direct graph. Short-cut of
    * <tt>readClassFiles(classFiles, new {@link TrueStringPattern}(), 
    * null, false);</tt>
    */
-  public static AtomicVertex[] readClassFiles(String[] classFiles)
-                               throws IOException 
+  public static AtomicVertex[] readClassFiles(String[] classFiles) throws IOException
   {
     return readClassFiles(classFiles, new TrueStringPattern(), null, false);
   }
 
   /**
-   *  Reads the specified class files and creates a directed graph where each
-   *  vertex represents a class. The head vertex of an arc is a class which is
-   *  used by the tail vertex of the arc.
-   *  The elements of <tt>classFiles</tt> are file names (relative to the
-   *  working directory) which are interpreted depending on its file type as
-   *  <ul>
-   *    <li>path of a class file (file type <tt>.class</tt>)
-   *    <li>path of a class file inside a ZIP file. The path has to contain both paths:
-   *        the path of the ZIP file first and the path of the class file in the ZIP file second.
-   *        Both have to be separated by '::'.
-   *    <li>path of a file of type <code>.zip</code>, <code>.jar</code>,
-   *        <code>.war</code>, or <code>.ear</code>
-   *        containing class file
-   *    <li>path of a folder containing class files or zip/jar/war/ear files
-   *  </ul>
-   *  Folders and zip/jar/war/ear files are searched recursively 
-   *  for class files. If a folder is specified only the top-level 
-   *  zip/jar/war/ear files of that folder are analysed.
-   *  @param classFiles Array of file paths.
-   *  @param pattern Pattern fully qualified class names have to match in order
-   *                 to be added to the graph. Otherwise they count as
-   *                 'external'.
-   *  @param reflectionPattern Pattern ordinary string constants of a class 
-   *                 file have to fullfill in order to be handled as
-   *                 class references. In addition they have to be 
-   *                 syntactically valid fully qualified class names. If
-   *                 <tt>null</tt> ordinary string constants will not be 
-   *                 checked.
-   *  @param mergeInnerClasses If <code>true</code> 
-   *                 merge inner classes with its outer class
-   *  @return directed graph.
+   * Reads the specified class files and creates a directed graph where each
+   * vertex represents a class. The head vertex of an arc is a class which is
+   * used by the tail vertex of the arc. The elements of <tt>classFiles</tt> are
+   * file names (relative to the working directory) which are interpreted
+   * depending on its file type as
+   * <ul>
+   * <li>path of a class file (file type <tt>.class</tt>)
+   * <li>path of a class file inside a ZIP file. The path has to contain both
+   * paths: the path of the ZIP file first and the path of the class file in the
+   * ZIP file second. Both have to be separated by '::'.
+   * <li>path of a file of type <code>.zip</code>, <code>.jar</code>,
+   * <code>.war</code>, or <code>.ear</code> containing class file
+   * <li>path of a folder containing class files or zip/jar/war/ear files
+   * </ul>
+   * Folders and zip/jar/war/ear files are searched recursively for class files.
+   * If a folder is specified only the top-level zip/jar/war/ear files of that
+   * folder are analysed.
+   * 
+   * @param classFiles
+   *          Array of file paths.
+   * @param pattern
+   *          Pattern fully qualified class names have to match in order to be
+   *          added to the graph. Otherwise they count as 'external'.
+   * @param reflectionPattern
+   *          Pattern ordinary string constants of a class file have to fullfill
+   *          in order to be handled as class references. In addition they have
+   *          to be syntactically valid fully qualified class names. If
+   *          <tt>null</tt> ordinary string constants will not be checked.
+   * @param mergeInnerClasses
+   *          If <code>true</code> merge inner classes with its outer class
+   * @return directed graph.
    */
-  public static AtomicVertex[] readClassFiles(String[] classFiles, 
-                                              StringPattern pattern,
-                                              StringPattern reflectionPattern, 
-                                              boolean mergeInnerClasses)
-                               throws IOException 
+  public static AtomicVertex[] readClassFiles(String[] classFiles, StringPattern pattern, StringPattern reflectionPattern,
+      boolean mergeInnerClasses) throws IOException
   {
     ArrayList<UnresolvedNode> unresolvedNodes = new ArrayList<UnresolvedNode>();
     Map<String, ZipFile> archives = new HashMap<String, ZipFile>();
-    for (int i = 0; i < classFiles.length; i++) 
-    {
+    for (int i = 0; i < classFiles.length; i++) {
       String classFile = classFiles[i];
       int indexOfDelimiter = classFile.indexOf(ARCHIVE_PATH_DELIMITER);
-      if (indexOfDelimiter >= 0)  
-      {
+      if (indexOfDelimiter >= 0) {
         String archivePath = classFile.substring(0, indexOfDelimiter);
         ZipFile zipFile = archives.get(archivePath);
-        if (zipFile == null)
-        {
+        if (zipFile == null) {
           zipFile = new ZipFile(archivePath);
           archives.put(archivePath, zipFile);
         }
-        classFile = classFile.substring(indexOfDelimiter + ARCHIVE_PATH_DELIMITER.length()); 
+        classFile = classFile.substring(indexOfDelimiter + ARCHIVE_PATH_DELIMITER.length());
         ZipEntry entry = zipFile.getEntry(classFile);
         analyseClassFileFromZipEntry(zipFile, entry, archivePath, unresolvedNodes, reflectionPattern);
         continue;
       }
       File file = new File(classFile);
-      if (file.isDirectory()) 
-      {
+      if (file.isDirectory()) {
         analyseClassFile(file, classFile, unresolvedNodes, reflectionPattern);
         File[] files = file.listFiles(ZIP_FILE_FILTER);
-        for (int j = 0; j < files.length; j++)
-        {
+        for (int j = 0; j < files.length; j++) {
           String source = createSourceName(classFile, files[j].getName());
-          analyseClassFiles(new ZipFile(files[j].getAbsoluteFile()), source, 
-                            unresolvedNodes, reflectionPattern);
+          analyseClassFiles(new ZipFile(files[j].getAbsoluteFile()), source, unresolvedNodes, reflectionPattern);
         }
-      } else if (file.getName().endsWith(".class")) 
-      {
+      } else if (file.getName().endsWith(".class")) {
         analyseClassFile(file, null, unresolvedNodes, reflectionPattern);
-      } else if (isZipFile(file)) 
-      {
-        analyseClassFiles(new ZipFile(file.getAbsoluteFile()), classFile,
-                          unresolvedNodes, 
-                          reflectionPattern);
-      } else 
-      {
+      } else if (isZipFile(file)) {
+        analyseClassFiles(new ZipFile(file.getAbsoluteFile()), classFile, unresolvedNodes, reflectionPattern);
+      } else {
         throw new IOException(classFile + " is an invalid file.");
       }
     }
     List<UnresolvedNode> filteredNodes = new ArrayList<UnresolvedNode>();
-    for (UnresolvedNode node : unresolvedNodes)
-    {
-      if (node.isMatchedBy(pattern))
-      {
+    for (UnresolvedNode node : unresolvedNodes) {
+      if (node.isMatchedBy(pattern)) {
         filteredNodes.add(node);
       }
     }
@@ -181,129 +165,148 @@ public class Parser
 
   private static String createSourceName(String classFile, String name)
   {
-    return classFile + (classFile.endsWith(File.separator) ? name 
-                                            : File.separatorChar + name);
+    return classFile + (classFile.endsWith(File.separator) ? name : File.separatorChar + name);
   }
 
-  private static boolean isZipFile(File file) 
+  private static boolean isZipFile(File file)
   {
-    boolean result = false;
-    String name = file.getName().toLowerCase();
-    for (int i = 0; i < ZIP_FILE_TYPES.length; i++) 
-    {
-      if (name.endsWith(ZIP_FILE_TYPES[i]))
-      {
-        result = true;
-        break;
+    return isZip(file.getName());
+  }
+
+  private static boolean isZip(String s)
+  {
+    String entry = s.toLowerCase();
+    for (int i = 0; i < ZIP_FILE_TYPES.length; i++) {
+      if (entry.endsWith(ZIP_FILE_TYPES[i])) {
+        return true;
       }
     }
-    return result;
+    return false;
   }
 
-  private static void analyseClassFile(File file, String source, 
-                                       ArrayList<UnresolvedNode> unresolvedNodes, 
-                                       StringPattern reflectionPattern)
-                      throws IOException 
+  private static void analyseClassFile(File file, String source, ArrayList<UnresolvedNode> unresolvedNodes,
+      StringPattern reflectionPattern) throws IOException
   {
-    if (file.isDirectory()) 
-    {
+    if (file.isDirectory()) {
       String[] files = file.list();
-      for (int i = 0; i < files.length; i++) 
-      {
+      for (int i = 0; i < files.length; i++) {
         File child = new File(file, files[i]);
-        if (child.isDirectory() || files[i].endsWith(".class")) 
-        {
+        if (child.isDirectory() || files[i].endsWith(".class")) {
           analyseClassFile(child, source, unresolvedNodes, reflectionPattern);
         }
       }
-    } else 
-    {
+    } else {
       unresolvedNodes.add(extractNode(file, source, reflectionPattern));
     }
   }
 
-  private static UnresolvedNode extractNode(File file, String source,  
-                                            StringPattern reflectionPattern) 
-                                throws IOException 
+  private static UnresolvedNode extractNode(File file, String source, StringPattern reflectionPattern) throws IOException
   {
     InputStream stream = null;
     UnresolvedNode result = null;
-    try 
-    {
+    try {
       stream = new FileInputStream(file);
-      result = Parser.createNode(stream, source, (int) file.length(), 
-                                 reflectionPattern);
-    } finally 
-    {
-      if (stream != null)
-      {
-        try 
-        {
+      result = Parser.createNode(stream, source, (int) file.length(), reflectionPattern);
+    } finally {
+      if (stream != null) {
+        try {
           stream.close();
-        } catch (IOException e) {}
+        } catch (IOException e) {
+        }
       }
     }
     return result;
   }
 
-  private static void analyseClassFiles(ZipFile zipFile, String source,
-          ArrayList<UnresolvedNode> unresolvedNodes, StringPattern reflectionPattern)
-          throws IOException
+  private static void analyseClassFiles(ZipFile zipFile, String source, ArrayList<UnresolvedNode> unresolvedNodes,
+      StringPattern reflectionPattern) throws IOException
   {
     Enumeration<? extends ZipEntry> entries = zipFile.entries();
-    while (entries.hasMoreElements())
-    {
+    while (entries.hasMoreElements()) {
       ZipEntry entry = entries.nextElement();
       analyseClassFileFromZipEntry(zipFile, entry, source, unresolvedNodes, reflectionPattern);
     }
   }
 
-  private static void analyseClassFileFromZipEntry(ZipFile zipFile, ZipEntry entry, String source,
-          ArrayList<UnresolvedNode> unresolvedNodes, StringPattern reflectionPattern)
-          throws IOException
+  private static void analyzeClassFileFromZipStream(ZipFile zipFile, ZipInputStream zipEntryStream, String source,
+      ArrayList<UnresolvedNode> unresolvedNodes, StringPattern reflectionPattern) throws IOException
   {
-    if (!entry.isDirectory() && entry.getName().endsWith(".class"))
-    {
+    byte[] entryBytes = readZipEntry(zipEntryStream);
+    try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(entryBytes))) {
+      for (ZipEntry ze = zis.getNextEntry(); ze != null; ze = zis.getNextEntry()) {
+        if (!ze.isDirectory() && ze.getName().endsWith(".class")) {
+          byte[] zeBytes = readZipEntry(zis);
+          int size = zeBytes.length;
+          unresolvedNodes.add(Parser.createNode(new ByteArrayInputStream(zeBytes), source, size, reflectionPattern));
+        }
+      }
+    }
+  }
+
+  private static byte[] readZipEntry(ZipInputStream zipEntryStream) throws IOException
+  {
+    try (ByteArrayOutputStream outStream = new ByteArrayOutputStream()) {
+      byte[] buf = new byte[1024];
+      int read;
+      while ((read = zipEntryStream.read(buf)) >= 0) {
+        outStream.write(buf, 0, read);
+      }
+      return outStream.toByteArray();
+    }
+  }
+
+  private static void analyseClassFileFromZipEntry(ZipFile zipFile, ZipEntry entry, String source,
+      ArrayList<UnresolvedNode> unresolvedNodes, StringPattern reflectionPattern) throws IOException
+  {
+    if (!entry.isDirectory() && entry.getName().endsWith(".class")) {
       InputStream stream = zipFile.getInputStream(entry);
       int size = (int) entry.getSize();
       unresolvedNodes.add(Parser.createNode(stream, source, size, reflectionPattern));
+    } else if (isZip(entry.getName())) {
+      InputStream entryStream = zipFile.getInputStream(entry);
+      ZipInputStream zipEntryStream = new ZipInputStream(entryStream);
+      for (ZipEntry ze = zipEntryStream.getNextEntry(); ze != null; ze = zipEntryStream.getNextEntry()) {
+        if (!ze.isDirectory() && ze.getName().endsWith(".class")) {
+          String entrySource = source + ":" + entry.getName();
+          byte[] zipClass = readZipEntry(zipEntryStream);
+          unresolvedNodes.add(Parser.createNode(new ByteArrayInputStream(zipClass), entrySource, zipClass.length, reflectionPattern));
+        }
+      }
     }
   }
 
   /**
-   *  Creates a new node with unresolved references.
-   *  @param stream A just opended byte stream of a class file.
-   *         If this method finishes succefully the internal pointer of the
-   *         stream will point onto the superclass index.
-   * @param source Optional source of the class file. Can be <code>null</code>.
-   *  @param size Number of bytes of the class file.
-   *  @param reflectionPattern Pattern used to check whether a
-   *         {@link StringConstant} refer to a class. Can be <tt>null</tt>.
-   *  @return a node with unresolved link of all classes used by the analysed
+   * Creates a new node with unresolved references.
+   * 
+   * @param stream
+   *          A just opended byte stream of a class file. If this method
+   *          finishes succefully the internal pointer of the stream will point
+   *          onto the superclass index.
+   * @param source
+   *          Optional source of the class file. Can be <code>null</code>.
+   * @param size
+   *          Number of bytes of the class file.
+   * @param reflectionPattern
+   *          Pattern used to check whether a {@link StringConstant} refer to a
+   *          class. Can be <tt>null</tt>.
+   * @return a node with unresolved link of all classes used by the analysed
    *         class.
    */
-  private static UnresolvedNode createNode(InputStream stream, String source, 
-                                           int size,
-                                           StringPattern reflectionPattern)
-                                throws IOException 
+  private static UnresolvedNode createNode(InputStream stream, String source, int size, StringPattern reflectionPattern)
+      throws IOException
   {
     // Reads constant pool, accessFlags, and class name
     DataInputStream dataStream = new DataInputStream(stream);
     Constant[] pool = Constant.extractConstantPool(dataStream);
     int accessFlags = dataStream.readUnsignedShort();
-    String name =
-        ((ClassConstant) pool[dataStream.readUnsignedShort()]).getName();
+    String name = ((ClassConstant) pool[dataStream.readUnsignedShort()]).getName();
     ClassAttributes attributes = null;
-    if ((accessFlags & ACC_INTERFACE) != 0) 
-    {
+    if ((accessFlags & ACC_INTERFACE) != 0) {
       attributes = ClassAttributes.createInterface(name, source, size);
-    } else 
-    {
-      if ((accessFlags & ACC_ABSTRACT) != 0) 
-      {
+    } else {
+      if ((accessFlags & ACC_ABSTRACT) != 0) {
         attributes = ClassAttributes.createAbstractClass(name, source, size);
-      } else 
-      {
+      } else {
         attributes = ClassAttributes.createClass(name, source, size);
       }
     }
@@ -311,25 +314,18 @@ public class Parser
     // Creates a new node with unresolved references
     UnresolvedNode node = new UnresolvedNode();
     node.setAttributes(attributes);
-    for (int i = 0; i < pool.length; i++) 
-    {
+    for (int i = 0; i < pool.length; i++) {
       Constant constant = pool[i];
-      if (constant instanceof ClassConstant) 
-      {
+      if (constant instanceof ClassConstant) {
         ClassConstant cc = (ClassConstant) constant;
-        if (!cc.getName().startsWith(("[")) && !cc.getName().equals(name)) 
-        {
+        if (!cc.getName().startsWith(("[")) && !cc.getName().equals(name)) {
           node.addLinkTo(cc.getName());
         }
-      } else if (constant instanceof UTF8Constant) 
-      {
+      } else if (constant instanceof UTF8Constant) {
         parseUTF8Constant((UTF8Constant) constant, node, name);
-      } else if (reflectionPattern != null 
-                 && constant instanceof StringConstant) 
-      {
+      } else if (reflectionPattern != null && constant instanceof StringConstant) {
         String str = ((StringConstant) constant).getString();
-        if (ClassNameExtractor.isValid(str) && reflectionPattern.matches(str)) 
-        {
+        if (ClassNameExtractor.isValid(str) && reflectionPattern.matches(str)) {
           node.addLinkTo(str);
         }
       }
@@ -337,22 +333,18 @@ public class Parser
     return node;
   }
 
-  /** 
+  /**
    * Parses an UFT8Constant and picks class names if it has the correct syntax
    * of a field or method descirptor.
    */
-  static void parseUTF8Constant(UTF8Constant constant, UnresolvedNode node, 
-                                String className) 
+  static void parseUTF8Constant(UTF8Constant constant, UnresolvedNode node, String className)
   {
     Set<String> classNames = new ClassNameExtractor(constant).extract();
-    for (String element : classNames)
-    {
-      if (className.equals(element) == false)
-      {
+    for (String element : classNames) {
+      if (className.equals(element) == false) {
         node.addLinkTo(element);
       }
     }
   }
 
-
-} //class
+} // class
